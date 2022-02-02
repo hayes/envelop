@@ -51,7 +51,7 @@
     "@types/node": "16.11.22",
     "@typescript-eslint/eslint-plugin": "4.33.0",
     "@typescript-eslint/parser": "4.33.0",
-    "apollo-server": "3.5.0",
+    "apollo-server": "3.6.2",
     "benchmark": "2.1.4",
     "bob-the-bundler": "1.6.1",
     "chalk": "5.0.0",
