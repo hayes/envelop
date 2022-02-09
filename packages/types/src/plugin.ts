@@ -45,6 +45,8 @@ export interface Plugin<PluginContext extends Record<string, any> = {}> {
    */
   onContextBuilding?: OnContextBuildingHook<PluginContext>;
   /**
+   * @deprecated Use `onSchemaChange` to mutate the schema instead
+   *
    * Invoked before each resolver has been invoked during the execution phase.
    */
   onResolverCalled?: OnResolverCalledHook<any, DefaultArgs, PluginContext, unknown>;

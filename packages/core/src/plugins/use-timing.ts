@@ -1,6 +1,16 @@
 /* eslint-disable no-console */
-import { Plugin } from '@envelop/types';
-import { DocumentNode, ExecutionArgs, getOperationAST, GraphQLResolveInfo, Source, SubscriptionArgs } from 'graphql';
+import { Plugin, OnResolverCalledHook, AfterResolverHook, DefaultContext } from '@envelop/types';
+import { MapperKind, mapSchema } from '@graphql-tools/utils';
+import {
+  defaultFieldResolver,
+  DocumentNode,
+  ExecutionArgs,
+  getOperationAST,
+  GraphQLFieldConfig,
+  GraphQLResolveInfo,
+  Source,
+  SubscriptionArgs,
+} from 'graphql';
 import { isIntrospectionOperationString, envelopIsIntrospectionSymbol } from '../utils';
 
 const HR_TO_NS = 1e9;
@@ -46,6 +56,78 @@ const deltaFrom = (hrtime: [number, number]): { ms: number; ns: number } => {
 type InternalPluginContext = {
   [envelopIsIntrospectionSymbol]?: true;
 };
+
+function isThenable(result: unknown): result is Promise<unknown> {
+  return (
+    ((!!result && typeof result === 'object') || typeof result === 'function') &&
+    'then' in result &&
+    typeof (result as { then?: unknown }).then === 'function'
+  );
+}
+
+function resolveField(resolve: () => unknown, hook: AfterResolverHook) {
+  let result;
+  try {
+    result = resolve();
+  } catch (error) {
+    hook({ result: error, setResult: newResult => (result = newResult) });
+
+    throw error;
+  }
+
+  if (isThenable(result)) {
+    result.then(
+      resolved => {
+        result = resolved;
+        hook({ result, setResult: newResult => (result = newResult) });
+
+        return result;
+      },
+      error => {
+        hook({ result: error, setResult: newResult => (result = newResult) });
+
+        throw error;
+      }
+    );
+  }
+}
+
+function wrapResolver(
+  field: GraphQLFieldConfig<unknown, DefaultContext>,
+  onResolverCalled: OnResolverCalledHook
+): GraphQLFieldConfig<unknown, DefaultContext> {
+  const originalResolver = field.resolve ?? defaultFieldResolver;
+  return {
+    ...field,
+    resolve: (root, args, context, info) => {
+      let resolve = originalResolver;
+      const after = onResolverCalled({
+        root,
+        args,
+        context,
+        info,
+        resolverFn: resolve,
+        replaceResolverFn: fn => (resolve = fn),
+      });
+
+      if (!after) {
+        return resolve(root, args, context, info);
+      }
+
+      if (isThenable(after)) {
+        return after.then(hook => {
+          if (!hook) {
+            return resolve(root, args, context, info);
+          }
+
+          return resolveField(() => resolve(root, args, context, info), hook);
+        });
+      }
+
+      return resolveField(() => resolve(root, args, context, info), after);
+    },
+  };
+}
 
 export const useTiming = (rawOptions?: TimingPluginOptions): Plugin<InternalPluginContext> => {
   const options = {
@@ -154,6 +236,22 @@ export const useTiming = (rawOptions?: TimingPluginOptions): Plugin<InternalPlug
             options.onSubscriptionMeasurement && options.onSubscriptionMeasurement(args, deltaFrom(subscribeStartTime));
           },
         };
+      };
+
+      result.onSchemaChange = ({ replaceSchema, schema }) => {
+        replaceSchema(
+          mapSchema(schema, {
+            [MapperKind.COMPOSITE_FIELD]: field => {
+              return wrapResolver(field, ({ info }) => {
+                const resolverStartTime = process.hrtime();
+
+                return () => {
+                  options.onResolverMeasurement && options.onResolverMeasurement(info, deltaFrom(resolverStartTime));
+                };
+              });
+            },
+          })
+        );
       };
 
       result.onResolverCalled = ({ info }) => {
